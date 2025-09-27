@@ -23,6 +23,7 @@ const upload = multer({ storage: storage });
 router.post("/upload", auth, upload.single("video"), videoController.upload);
 router.get("/", auth, videoController.list);
 router.get("/download/:id", auth, videoController.download);
+router.get("/:id/presign", auth, videoController.getPresignedDownload);
 router.delete("/remove/:id", auth, videoController.remove);
 router.post("/transcode/:id", auth, videoController.transcode);
 router.get("/transcode/status/:id", auth, videoController.status);

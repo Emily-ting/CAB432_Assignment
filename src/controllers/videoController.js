@@ -3,11 +3,41 @@ const path = require("path");
 const fs = require('fs');
 const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
 const ffmpeg = require("fluent-ffmpeg");
+const storageS3 = require("../services/storageS3");
+const { GetObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { s3 } = require("../aws/clients");
+const BUCKET = process.env.S3_BUCKET;
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-exports.upload = (req, res) => {
-  const video = videoModel.save(req.file, req.user.username);
-  res.json({ success: true, data: video });
+exports.upload = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: "No file" });
+
+    // 1) 先把本機暫存檔上傳 S3
+    const key = `raw/${req.user.username}/${Date.now()}-${req.file.originalname}`;
+    await storageS3.putFileFromDisk({
+      localPath: req.file.path,
+      key,
+      contentType: req.file.mimetype
+    });
+
+    // 2) 存 metadata（現在先沿用你的 videoModel；之後會換 DynamoDB 版本）
+    const video = videoModel.save(
+      { originalname: req.file.originalname, filename: path.basename(key), path: key }, // 注意 path 改成 S3 key
+      req.user.username
+    );
+    // 同時你也可以在 save() 改欄位名，例如新增 rawKey=S3 key
+    video.path = key;   // S3 key
+    video.rawKey = key; // 新欄位更語義化
+    video.status = "uploaded";
+    videoModel.updateStatus(video.id, "uploaded");
+
+    res.json({ success: true, data: video });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: "Upload failed" });
+  }
 };
 
 exports.list = (req, res) => {
@@ -32,48 +62,64 @@ exports.list = (req, res) => {
   res.json({ success: true, data: returnVideos });
 };
 
-exports.download = (req, res) => {
+exports.download = async (req, res) => {
   const id = req.params.id;
   const video = videoModel.findById(id);
+  if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
-  if (!video) {
-    return res.status(404).json({ success: false, message: "Video not found" });
+  // 若已轉碼則優先提供轉碼檔；否則提供原始檔
+  const key = video.transcoded || video.transcodedKey || video.rawKey || video.path;
+  if (!key) return res.status(404).json({ success: false, message: "No object key" });
+
+  try {
+    await storageS3.streamToResponse({
+      key,
+      res,
+      downloadName: video.original
+    });
+  } catch (e) {
+    console.error("Download error:", e);
+    res.status(500).json({ success: false, message: "Download failed" });
   }
-
-  const absolutePath = path.resolve(video.path);
-  res.download(absolutePath, video.original, (err) => {
-    if (err) {
-      console.error("Download error:", err);
-      return res.status(500).json({ success: false, message: "Download failed" });
-    }
-  });
-
-  videoModel.incrementDownloads(id);
 };
 
-exports.remove = (req, res) => {
+exports.remove = async (req, res) => {
   const id = req.params.id;
   const video = videoModel.findById(id);
+  if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
-  if (!video) {
-    return res.status(404).json({ success: false, message: "Video not found" });
-  }
+  try {
+    // 刪 S3 上的原檔
+    if (video.rawKey) await storageS3.deleteObject(video.rawKey);
+    // 刪 S3 上的轉碼檔（若有）
+    if (video.transcodedKey) await storageS3.deleteObject(video.transcodedKey);
 
-  // path of file
-  const filePath = path.resolve(video.path); // assume model.save() save the path of file
-
-  // delete file
-  fs.unlink(filePath, (err) => {
-    if (err) {
-      console.error("File deletion error:", err);
-      return res.status(500).json({ success: false, message: "File deletion failed" });
-    }
-
-    // remove data from database
+    // 刪 metadata
     videoModel.removeById(id);
 
-    res.json({ success: true, message: "Video deleted successfully" });
-  });
+    res.json({ success: true, message: "Video deleted" });
+  } catch (e) {
+    console.error("Remove error:", e);
+    res.status(500).json({ success: false, message: "Delete failed" });
+  }
+};
+
+exports.getPresignedDownload = async (req, res) => {
+  const id = req.params.id;
+  const video = videoModel.findById(id);
+  if (!video) return res.status(404).json({ success: false });
+
+  const key = video.transcodedKey || video.rawKey;
+  if (!key) return res.status(400).json({ success: false, message: "No key" });
+
+  try {
+    const command = new GetObjectCommand({ Bucket: BUCKET, Key: key });
+    const url = await getSignedUrl(s3, command, { expiresIn: 3600 });
+    res.json({ success: true, url });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false });
+  }
 };
 
 exports.transcode = (req, res) => {

@@ -1,0 +1,8 @@
+# dependances
+node_modules/
+
+# setting
+.env
+
+# data
+uploads/*

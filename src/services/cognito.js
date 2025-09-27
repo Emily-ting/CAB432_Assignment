@@ -6,7 +6,7 @@ const {
   ConfirmSignUpCommand,
   InitiateAuthCommand,
 } = require("@aws-sdk/client-cognito-identity-provider");
-const { createRemoteJWKSet, jwtVerify } = require("jose");
+const { CognitoJwtVerifier } = require("aws-jwt-verify");
 
 const region = process.env.AWS_REGION || "ap-southeast-2";
 const userPoolId = process.env.COGNITO_USER_POOL_ID;
@@ -51,13 +51,16 @@ exports.login = async ({ username, password }) => {
 
 // ===== 驗證 JWT（IdToken） =====
 // 使用 Cognito 公開 JWKS，自動抓金鑰並快取
-const jwksUri = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
-const JWKS = createRemoteJWKSet(new URL(jwksUri));
+// const jwksUri = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
+// const JWKS = createRemoteJWKSet(new URL(jwksUri));
+
+const verifier = CognitoJwtVerifier.create({
+  userPoolId: userPoolId,
+  tokenUse: "id",
+  clientId: clientId,
+});
 
 exports.verifyIdToken = async (token) => {
-  const { payload } = await jwtVerify(token, JWKS, {
-    issuer: `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`,
-    audience: clientId,
-  });
+  const payload = await verifier.verify(token);
   return payload; // 含 cognito:username / email / sub 等
 };

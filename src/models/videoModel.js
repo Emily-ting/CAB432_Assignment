@@ -1,93 +1,101 @@
 const fs = require('fs');
 const path = require('path');
+const { ddoc } = require("../aws/clients");
+const { PutCommand, GetCommand, QueryCommand, UpdateCommand, DeleteCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 
 const filePath = path.join(__dirname, './../data/videos.json');
+const TABLE = process.env.DDB_TABLE;
+const QUT  = process.env.QUT_USERNAME;
+const SK   = "sk";
 
-function readVideos() {
-  if (!fs.existsSync(filePath)) return [];
-  const data = fs.readFileSync(filePath);
-  return JSON.parse(data);
+function makeSk(owner, id) {
+  return `video#${owner}#${id}`;
 }
 
-function writeVideos(videos) {
-  fs.writeFileSync(filePath, JSON.stringify(videos, null, 2));
-}
-
-exports.save = (file, owner, metadata = {}) => {
-  const videos = readVideos();
-  const newVideo = {
+exports.save = (file, owner) => {
+  const item = {
+    "qut-username": QUT,
+    [SK]: makeSk(owner, id, createdAt),
     id: Date.now(),
     original: file.originalname,
     filename: file.filename,
     path: file.path,
+    rawKey: file.path || file.rawKey || file.key,
     owner,
     status: "uploaded",
     format: "mp4",
-    created_at: new Date().toISOString(),
-    downloads: 0,       // download counter
-    transcodes: 0,      // transcode counter
-    metadata   // save information from Pexels or other source
+    createdAt: new Date().toISOString(),
+    counts: { downloads: 0, transcodes: 0 },
+    metadata: file.metadata || {}   // save information from Pexels or other source
   };
-  videos.push(newVideo);
-  writeVideos(videos);
-  return newVideo;
+  return ddoc.send(new PutCommand({ TableName: TABLE, Item: item })).then(() => item);
 };
 
-exports.findByOwner = (owner, query) => {
-  const videos = readVideos();
-  if (owner === "admit") {
-    return videos;
-  }
-  return videos.filter(v => v.owner === owner);
+exports.findByOwner = async (owner, query) => {
+  const prefix = `video#${owner}#`;
+  const res = await ddoc.send(new QueryCommand({
+    TableName: TABLE,
+    KeyConditionExpression: "#pk = :me AND begins_with(#sk, :prefix)",
+    ExpressionAttributeNames:  { "#pk": "qut-username", "#sk": SK },
+    ExpressionAttributeValues: { ":me": QUT, ":prefix": prefix },
+    Limit: Number(query.limit || 50)
+  }));
+  // 簡單排序：createdAt desc（若你 sk 含 createdAt 就不用 sort）
+  const items = (res.Items || []).sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  // const items = res.Items || [];
+  return items;
 };
 
-exports.findById = (id) => {
-  const videos = readVideos();
-  return videos.find(v => v.id == id);
+exports.findById = async (id, owner) => {
+  const r = await ddoc.send(new GetCommand({
+    TableName: TABLE,
+    Key: { "qut-username": QUT, [SK]: makeSk(owner, id) }
+  }));
+  return r.Item || null;
 };
 
-exports.removeById = (id) => {
-  const videos = readVideos();
-  const filtered = videos.filter(v => v.id != id);
-  const deleted = filtered.length < videos.length; // check is delete successful
-  writeVideos(filtered);
-  return { deleted };
+exports.removeById = async (id, owner) => {
+  await ddoc.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { "qut-username": QUT, [SK]: makeSk(owner, id) }
+  }));
+  return { deleted: true };
 };
 
-exports.updateTranscoded = (id, newPath, format, status) => {
-  const videos = readVideos();
-  const index = videos.findIndex(v => v.id == id);
-  if (index !== -1) {
-    videos[index].transcoded = newPath;
-    videos[index].format = format;
-    videos[index].status = status;
-    writeVideos(videos);
-  }
+exports.updateTranscoded = async (id, newKey, format, status, owner) => {
+  await ddoc.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { "qut-username": QUT, [SK]: makeSk(owner, id) },
+    UpdateExpression: "SET transcodedKey = :k, #f = :f, #s = :s",
+    ExpressionAttributeNames:  { "#f": "format", "#s": "status" },
+    ExpressionAttributeValues: { ":k": newKey, ":f": format, ":s": status }
+  }));
 };
 
-exports.updateStatus = (id, status) => {
-  const videos = readVideos();
-  const index = videos.findIndex(v => v.id == id);
-  if (index !== -1) {
-    videos[index].status = status;
-    writeVideos(videos);
-  }
+exports.updateStatus = async (id, status, owner) => {
+  await ddoc.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { "qut-username": QUT, [SK]: makeSk(owner, id) },
+    UpdateExpression: "SET #s = :s",
+    ExpressionAttributeNames:  { "#s": "status" },
+    ExpressionAttributeValues: { ":s": status }
+  }));
 };
 
-exports.incrementDownloads = (id) => {
-  const videos = readVideos();
-  const index = videos.findIndex(v => v.id == id);
-  if (index !== -1) {
-    videos[index].downloads = (videos[index].downloads || 0) + 1;
-    writeVideos(videos);
-  }
+exports.incrementDownloads = async (id, owner) => {
+  await ddoc.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { "qut-username": QUT, [SK]: makeSk(owner, id) },
+    UpdateExpression: `ADD counts.downloads :one`,
+    ExpressionAttributeValues: { ":one": 1 }
+  }));
 };
 
-exports.incrementTranscodes = (id) => {
-  const videos = readVideos();
-  const index = videos.findIndex(v => v.id == id);
-  if (index !== -1) {
-    videos[index].transcodes = (videos[index].transcodes || 0) + 1;
-    writeVideos(videos);
-  }
+exports.incrementTranscodes = async (id, owner) => {
+  await ddoc.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { "qut-username": QUT, [SK]: makeSk(owner, id) },
+    UpdateExpression: `ADD counts.transcodes :one`,
+    ExpressionAttributeValues: { ":one": 1 }
+  }));
 };

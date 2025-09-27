@@ -24,11 +24,11 @@ exports.upload = async (req, res) => {
 
     // 2) 存 metadata（現在先沿用你的 videoModel；之後會換 DynamoDB 版本）
     const video = videoModel.save(
-      { originalname: req.file.originalname, filename: path.basename(key), path: key }, // 注意 path 改成 S3 key
+      { originalname: req.file.originalname, filename: path.basename(key), path: key, rawKey: key }, // 注意 path 改成 S3 key
       req.user.username
     );
     video.status = "uploaded";
-    videoModel.updateStatus(video.id, "uploaded");
+    videoModel.updateStatus(video.id, "uploaded", req.user.username);
 
     res.json({ success: true, data: video });
   } catch (e) {
@@ -61,11 +61,11 @@ exports.list = (req, res) => {
 
 exports.download = async (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id);
+  const video = videoModel.findById(id, req.user.username);
   if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
   // 若已轉碼則優先提供轉碼檔；否則提供原始檔
-  const key = video.transcoded || video.transcodedKey || video.path;
+  const key = video.transcoded || video.transcodedKey || video.rawKey || video.path;
   if (!key) return res.status(404).json({ success: false, message: "No object key" });
 
   try {
@@ -74,6 +74,7 @@ exports.download = async (req, res) => {
       res,
       downloadName: video.original
     });
+    videoModel.incrementDownloads(id, req.user.username);
   } catch (e) {
     console.error("Download error:", e);
     res.status(500).json({ success: false, message: "Download failed" });
@@ -82,17 +83,17 @@ exports.download = async (req, res) => {
 
 exports.remove = async (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id);
+  const video = videoModel.findById(id, req.user.username);
   if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
   try {
     // 刪 S3 上的原檔
-    if (video.path) await storageS3.deleteObject(video.path);
+    if (video.rawKey) await storageS3.deleteObject(video.rawKey);
     // 刪 S3 上的轉碼檔（若有）
     if (video.transcodedKey) await storageS3.deleteObject(video.transcodedKey);
 
     // 刪 metadata
-    videoModel.removeById(id);
+    videoModel.removeById(id, req.user.username);
 
     res.json({ success: true, message: "Video deleted" });
   } catch (e) {
@@ -103,10 +104,10 @@ exports.remove = async (req, res) => {
 
 exports.getPresignedDownload = async (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id);
+  const video = videoModel.findById(id, req.user.username);
   if (!video) return res.status(404).json({ success: false });
 
-  const key = video.transcodedKey || video.path;
+  const key = video.transcodedKey || video.rawKey;
   if (!key) return res.status(400).json({ success: false, message: "No key" });
 
   try {
@@ -123,12 +124,12 @@ exports.transcode = (req, res) => {
   const id = req.params.id;
   const { resolution = "720p", format = "gif" } = req.body;
 
-  const video = videoModel.findById(id);
+  const video = videoModel.findById(id, req.user.username);
   if (!video) {
     return res.status(404).json({ success: false, message: "Video not found" });
   }
 
-  videoModel.incrementTranscodes(id);
+  videoModel.incrementTranscodes(id, req.user.username);
 
   // source path
   const inputPath = path.resolve(video.path);
@@ -167,12 +168,12 @@ exports.transcode = (req, res) => {
       console.log("FFmpeg finished:", outputPath);
       video.status = "done";
       video.transcoded = outputPath; // save transcode file into database
-      videoModel.updateTranscoded(id, outputPath, format, video.status);
+      videoModel.updateTranscoded(id, outputPath, format, video.status, req.user.username);
     })
     .on("error", (err) => {
       console.error("FFmpeg error:", err.message);
       video.status = "error";
-      videoModel.updateStatus(id, "error");
+      videoModel.updateStatus(id, "error", req.user.username);
     })
     .save(outputPath);
 
@@ -190,7 +191,7 @@ exports.transcode = (req, res) => {
 
 exports.status = (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id);
+  const video = videoModel.findById(id, req.user.username);
 
   if (!video) {
     return res.status(404).json({ success: false, message: "Video not found" });

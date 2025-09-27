@@ -13,14 +13,16 @@ function makeSk(owner, id) {
 }
 
 exports.save = (file, owner) => {
+  const id = Date.now().toString();
   const item = {
     "qut-username": QUT,
-    [SK]: makeSk(owner, id, createdAt),
-    id: Date.now(),
+    [SK]: makeSk(owner, id),
+    id: id,
     original: file.originalname,
     filename: file.filename,
     path: file.path,
     rawKey: file.path || file.rawKey || file.key,
+    transcodedKey: file.transcoded || file.transcodedKey,
     owner,
     status: "uploaded",
     format: "mp4",

@@ -23,12 +23,13 @@ exports.upload = async (req, res) => {
     });
 
     // 2) 存 metadata（現在先沿用你的 videoModel；之後會換 DynamoDB 版本）
-    const video = videoModel.save(
+    const video = await videoModel.save(
       { originalname: req.file.originalname, filename: path.basename(key), path: key, rawKey: key }, // 注意 path 改成 S3 key
       req.user.username
     );
     video.status = "uploaded";
     videoModel.updateStatus(video.id, "uploaded", req.user.username);
+    console.log("upload:", video);
 
     res.json({ success: true, data: video });
   } catch (e) {
@@ -37,11 +38,12 @@ exports.upload = async (req, res) => {
   }
 };
 
-exports.list = (req, res) => {
-  const videos = videoModel.findByOwner(req.user.username, req.query);
+exports.list = async (req, res) => {
+  const videos = await videoModel.findByOwner(req.user.username, req.query);
   returnVideos = videos;
-  if (req.query.sort === "created_at") {
-    returnVideos = videos.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  console.log("videos type:", typeof videos, Array.isArray(videos), videos);
+  if (req.query.sort === "createdAt") {
+    returnVideos = videos.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }
   if (req.query.format != null) {
     returnVideos = returnVideos.filter(v => v.format === req.query.format);
@@ -61,11 +63,12 @@ exports.list = (req, res) => {
 
 exports.download = async (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id, req.user.username);
+  const video = await videoModel.findById(id, req.user.username);
   if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
   // 若已轉碼則優先提供轉碼檔；否則提供原始檔
   const key = video.transcoded || video.transcodedKey || video.rawKey || video.path;
+  console.log("download key:", key, video);
   if (!key) return res.status(404).json({ success: false, message: "No object key" });
 
   try {
@@ -83,7 +86,7 @@ exports.download = async (req, res) => {
 
 exports.remove = async (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id, req.user.username);
+  const video = await videoModel.findById(id, req.user.username);
   if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
   try {
@@ -104,10 +107,11 @@ exports.remove = async (req, res) => {
 
 exports.getPresignedDownload = async (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id, req.user.username);
+  const video = await videoModel.findById(id, req.user.username);
   if (!video) return res.status(404).json({ success: false });
 
   const key = video.transcodedKey || video.rawKey;
+  console.log("getPresignedDownload key:", key, video);
   if (!key) return res.status(400).json({ success: false, message: "No key" });
 
   try {
@@ -120,11 +124,12 @@ exports.getPresignedDownload = async (req, res) => {
   }
 };
 
-exports.transcode = (req, res) => {
+exports.transcode = async (req, res) => {
   const id = req.params.id;
   const { resolution = "720p", format = "gif" } = req.body;
 
-  const video = videoModel.findById(id, req.user.username);
+  const video = await videoModel.findById(id, req.user.username);
+  console.log("transcode:", video);
   if (!video) {
     return res.status(404).json({ success: false, message: "Video not found" });
   }
@@ -189,9 +194,9 @@ exports.transcode = (req, res) => {
   });
 };
 
-exports.status = (req, res) => {
+exports.status = async (req, res) => {
   const id = req.params.id;
-  const video = videoModel.findById(id, req.user.username);
+  const video = await videoModel.findById(id, req.user.username);
 
   if (!video) {
     return res.status(404).json({ success: false, message: "Video not found" });
@@ -205,7 +210,7 @@ exports.status = (req, res) => {
       status: video.status || "unknown",
       format: video.format,
       transcoded: video.transcoded || null,
-      created_at: video.created_at
+      createdAt: video.createdAt
     }
   });
 };

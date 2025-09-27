@@ -27,9 +27,6 @@ exports.upload = async (req, res) => {
       { originalname: req.file.originalname, filename: path.basename(key), path: key }, // 注意 path 改成 S3 key
       req.user.username
     );
-    // 同時你也可以在 save() 改欄位名，例如新增 rawKey=S3 key
-    video.path = key;   // S3 key
-    video.rawKey = key; // 新欄位更語義化
     video.status = "uploaded";
     videoModel.updateStatus(video.id, "uploaded");
 
@@ -68,7 +65,7 @@ exports.download = async (req, res) => {
   if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
   // 若已轉碼則優先提供轉碼檔；否則提供原始檔
-  const key = video.transcoded || video.transcodedKey || video.rawKey || video.path;
+  const key = video.transcoded || video.transcodedKey || video.path;
   if (!key) return res.status(404).json({ success: false, message: "No object key" });
 
   try {
@@ -90,7 +87,7 @@ exports.remove = async (req, res) => {
 
   try {
     // 刪 S3 上的原檔
-    if (video.rawKey) await storageS3.deleteObject(video.rawKey);
+    if (video.path) await storageS3.deleteObject(video.path);
     // 刪 S3 上的轉碼檔（若有）
     if (video.transcodedKey) await storageS3.deleteObject(video.transcodedKey);
 
@@ -109,7 +106,7 @@ exports.getPresignedDownload = async (req, res) => {
   const video = videoModel.findById(id);
   if (!video) return res.status(404).json({ success: false });
 
-  const key = video.transcodedKey || video.rawKey;
+  const key = video.transcodedKey || video.path;
   if (!key) return res.status(400).json({ success: false, message: "No key" });
 
   try {

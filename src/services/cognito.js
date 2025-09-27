@@ -30,37 +30,23 @@ exports.signUp = async ({ username, password, email }) => {
     UserAttributes: [{ Name: "email", Value: email }],
   };
   if (clientSecret) params.SecretHash = secretHash(username);
-
-  const resp = await client.send(new SignUpCommand(params));
-  return resp;
+  return client.send(new SignUpCommand(params));
 };
 
 exports.confirmSignUp = async ({ username, code }) => {
-  const params = {
-    ClientId: clientId,
-    Username: username,
-    ConfirmationCode: code,
-  };
+  const params = { ClientId: clientId, Username: username, ConfirmationCode: code };
   if (clientSecret) params.SecretHash = secretHash(username);
-
-  const resp = await client.send(new ConfirmSignUpCommand(params));
-  return resp;
+  return client.send(new ConfirmSignUpCommand(params));
 };
 
 exports.login = async ({ username, password }) => {
-  const authParams = clientSecret
+  const AuthParameters = clientSecret
     ? { USERNAME: username, PASSWORD: password, SECRET_HASH: secretHash(username) }
     : { USERNAME: username, PASSWORD: password };
-
   const resp = await client.send(
-    new InitiateAuthCommand({
-      AuthFlow: "USER_PASSWORD_AUTH",
-      ClientId: clientId,
-      AuthParameters: authParams,
-    })
+    new InitiateAuthCommand({ AuthFlow: "USER_PASSWORD_AUTH", ClientId: clientId, AuthParameters })
   );
-  // Cognito 會回 AccessToken / IdToken / RefreshToken
-  return resp.AuthenticationResult;
+  return resp.AuthenticationResult; // { IdToken, AccessToken, RefreshToken, ... }
 };
 
 // ===== 驗證 JWT（IdToken） =====
@@ -69,10 +55,9 @@ const jwksUri = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well
 const JWKS = createRemoteJWKSet(new URL(jwksUri));
 
 exports.verifyIdToken = async (token) => {
-  // 驗證 issuer / audience（aud=clientId）
   const { payload } = await jwtVerify(token, JWKS, {
     issuer: `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`,
-    audience: clientId,  // IdToken 的 aud 是 ClientId
+    audience: clientId,
   });
-  return payload; // 內含：sub, email, cognito:username 等
+  return payload; // 含 cognito:username / email / sub 等
 };

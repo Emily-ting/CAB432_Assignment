@@ -39,26 +39,47 @@ exports.upload = async (req, res) => {
 };
 
 exports.list = async (req, res) => {
-  const videos = await videoModel.findByOwner(req.user.username, req.query);
-  returnVideos = videos;
-  console.log("videos type:", typeof videos, Array.isArray(videos), videos);
-  if (req.query.sort === "createdAt") {
-    returnVideos = videos.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  try {
+    const videosRaw = await videoModel.findByOwner(req.user.username, req.query);
+    let videos = Array.isArray(videosRaw) ? videosRaw : [];
+
+    // sort
+    if ((req.query.sort || "").toLowerCase() === "createdat") {
+      videos = videos.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+    }
+
+    // format filter
+    if (req.query.format) {
+      videos = videos.filter(v => (v.format || "").toLowerCase() === req.query.format.toLowerCase());
+    }
+
+    // source filter
+    const source = (req.query.source || "").toLowerCase();
+    if (source) {
+      if (source === "local") {
+        videos = videos.filter(v => !v.metadata?.source || v.metadata?.source === "local");
+      } else {
+        videos = videos.filter(v => (v.metadata?.source || "").toLowerCase() === source);
+      }
+    }
+
+    // pagination
+    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+    const limit = Math.max(parseInt(req.query.limit || "50", 10), 1);
+    const start = (page - 1) * limit;
+    const end = start + limit;
+
+    const pageItems = videos.slice(start, end);
+
+    res.json({
+      success: true,
+      data: pageItems,
+      meta: { total: videos.length, page, limit }
+    });
+  } catch (e) {
+    console.error("List error:", e);
+    res.status(500).json({ success: false, message: "List failed" });
   }
-  if (req.query.format != null) {
-    returnVideos = returnVideos.filter(v => v.format === req.query.format);
-  }
-  if (req.query.source.toLowerCase() === "local") {
-    returnVideos = returnVideos.filter(v => !v.metadata?.source || v.metadata?.source === "local");
-  } else {
-    returnVideos = returnVideos.filter(v => v.metadata?.source === "Pexels");
-  }
-  if ((req.query.page != null) && (req.query.limit != null)) {
-    startIndex = req.query.limit * (req.query.page - 1);
-    endIndex = req.query.limit * req.query.page;
-    returnVideos = returnVideos.slice(startIndex, endIndex);
-  }
-  res.json({ success: true, data: returnVideos });
 };
 
 exports.download = async (req, res) => {

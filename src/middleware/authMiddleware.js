@@ -1,13 +1,23 @@
-const jwt = require("jsonwebtoken");
-const SECRET = process.env.JWT_SECRET || "secret123";
+const cognito = require("../services/cognito");
 
-module.exports = (req, res, next) => {
-  const token = req.headers["authorization"]?.split(" ")[1];
-  if (!token) return res.status(401).json({ success: false, message: "No token" });
+module.exports = async function (req, res, next) {
+  try {
+    const h = req.headers.authorization || "";
+    if (!h.startsWith("Bearer ")) {
+      return res.status(401).json({ success: false, message: "Missing Bearer token" });
+    }
+    const token = h.slice("Bearer ".length).trim();
+    const payload = await cognito.verifyIdToken(token);
 
-  jwt.verify(token, SECRET, (err, user) => {
-    if (err) return res.status(403).json({ success: false, message: "Invalid token" });
-    req.user = user;
-    next();
-  });
+    // 你可以選擇用 email 或 cognito:username 當作 app 的 username
+    req.user = {
+      sub: payload.sub,
+      username: payload["cognito:username"],
+      email: payload.email,
+    };
+    return next();
+  } catch (e) {
+    console.error("auth middleware error:", e);
+    return res.status(401).json({ success: false, message: "Invalid token" });
+  }
 };

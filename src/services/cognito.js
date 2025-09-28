@@ -7,15 +7,24 @@ const {
   InitiateAuthCommand,
 } = require("@aws-sdk/client-cognito-identity-provider");
 const { CognitoJwtVerifier } = require("aws-jwt-verify");
+const { getSecretJSON } = require("../aws/secrets");
+const { getParam } = require("../aws/ssm");
 
-const region = process.env.AWS_REGION || "ap-southeast-2";
-const userPoolId = process.env.COGNITO_USER_POOL_ID;
-const clientId = process.env.COGNITO_CLIENT_ID;
-const clientSecret = process.env.COGNITO_CLIENT_SECRET || "";
+const SECRET_ID = "n11530430/cognito";
 
-const client = new CognitoIdentityProviderClient({ region });
+let region, userPoolId, clientId, clientSecret, client;
 
-function secretHash(username) {
+async function ensureCognito() {
+  if (region && userPoolId && clientId && clientSecret && client) return;
+  region = await getParam("/n11530430/app/REGION");
+  userPoolId = await getParam("/n11530430/app/COGNITO_USER_POOL_ID");
+  clientId = await getParam("/n11530430/app/COGNITO_CLIENT_ID");
+  clientSecret = (await getSecretJSON(SECRET_ID)).COGNITO_CLIENT_SECRET;
+  client = new CognitoIdentityProviderClient({ region });
+}
+
+async function secretHash(username) {
+  await ensureCognito();
   if (!clientSecret) return undefined;
   const hmac = crypto.createHmac("sha256", clientSecret);
   hmac.update(username + clientId);
@@ -23,6 +32,7 @@ function secretHash(username) {
 }
 
 exports.signUp = async ({ username, password, email }) => {
+  await ensureCognito();
   const params = {
     ClientId: clientId,
     Username: username,
@@ -34,12 +44,14 @@ exports.signUp = async ({ username, password, email }) => {
 };
 
 exports.confirmSignUp = async ({ username, code }) => {
+  await ensureCognito();
   const params = { ClientId: clientId, Username: username, ConfirmationCode: code };
   if (clientSecret) params.SecretHash = secretHash(username);
   return client.send(new ConfirmSignUpCommand(params));
 };
 
 exports.login = async ({ username, password }) => {
+  await ensureCognito();
   const AuthParameters = clientSecret
     ? { USERNAME: username, PASSWORD: password, SECRET_HASH: secretHash(username) }
     : { USERNAME: username, PASSWORD: password };
@@ -61,6 +73,7 @@ const verifier = CognitoJwtVerifier.create({
 });
 
 exports.verifyIdToken = async (token) => {
+  await ensureCognito();
   const payload = await verifier.verify(token);
   return payload; // 含 cognito:username / email / sub 等
 };

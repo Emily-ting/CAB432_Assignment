@@ -7,14 +7,11 @@ const SECRET_ID = "n11530430/pexels";
 let secret, PEXELS_BASE_URL, headers;
 
 async function ensurePexels() {
-  // 允許本機用 .env 覆蓋（開發方便）
-  if (process.env.PEXELS_API_KEY) return process.env.PEXELS_API_KEY;
-  secret = await getSecretJSON(SECRET_ID);
+  secret = (await getSecretJSON(SECRET_ID)).PEXELS_API_KEY;
   PEXELS_BASE_URL = await getParam("/n11530430/app/PEXELS_BASE_URL");
   console.log("api key: ", secret.PEXELS_API_KEY);
   console.log("pexels base url: ", PEXELS_BASE_URL);
   headers = { Authorization: PEXELS_API_KEY };
-  return secret.PEXELS_API_KEY;
 }
 
 async function searchPhotos(query, perPage = 5) {

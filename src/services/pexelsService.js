@@ -12,7 +12,7 @@ async function ensurePexels() {
   PEXELS_BASE_URL = await getParam("/n11530430/app/PEXELS_BASE_URL");
   console.log("api key: ", secret);
   console.log("pexels base url: ", PEXELS_BASE_URL);
-  headers = { Authorization: PEXELS_API_KEY };
+  headers = { Authorization: secret };
 }
 
 async function searchPhotos(query, perPage = 5) {

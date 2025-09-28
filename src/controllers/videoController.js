@@ -1,10 +1,15 @@
 const videoModel = require("../models/videoModel");
 const path = require("path");
+const os = require("os");
 const fs = require('fs');
+const fsp = fs.promises;
 const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
 const ffmpeg = require("fluent-ffmpeg");
 const storageS3 = require("../services/storageS3");
 ffmpeg.setFfmpegPath(ffmpegPath);
+const { s3 } = require("../aws/clients");
+const { GetObjectCommand } = require("@aws-sdk/client-s3");
+const { ensureS3 } = require("../services/storageS3"); // 若你有這個 helper，否則可以直接用 s3
 
 exports.upload = async (req, res) => {
   try {
@@ -187,84 +192,77 @@ exports.getPresignedDownload = async (req, res) => {
 };
 
 exports.transcode = async (req, res) => {
+  const id = req.params.id;
+  const { resolution = "720p", format = "mp4" } = req.body || {};
+
   try {
-    const id = req.params.id;
-    const { resolution = "720p", format = "mp4" } = req.body;
-
     const video = await videoModel.findById(id, req.user.username);
-    console.log("transcode:", video);
-  if (!video) {
-    return res.status(404).json({ success: false, message: "Video not found" });
-  }
+    if (!video) return res.status(404).json({ success: false, message: "Video not found" });
 
-    // 來源 key：優先 rawKey
+    // 1) 來源 key：優先 rawKey
     const srcKey = video.rawKey || video.path;
     if (!srcKey) return res.status(400).json({ success: false, message: "No source key" });
 
-    // 產生可被 ffmpeg 讀取的 HTTP URL
-    const inputUrl = await storageS3.getPresignedUrl(srcKey, 3600);
+    // 2) 下載到本機 /tmp
+    await ensureS3?.(); // 若你沒有這個函式可刪掉
+    const inExt = path.extname(video.filename) || ".mp4";
+    const base = path.basename(video.filename, path.extname(video.filename));
+    const tempDir = os.tmpdir();
+    const inLocal = path.join(tempDir, `in-${id}-${Date.now()}${inExt}`);
+    const outLocal = path.join(tempDir, `out-${id}-${Date.now()}.${format}`);
 
-    // 決定輸出參數
+    // 下載 S3 物件
+    const r = await s3.send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: srcKey }));
+    await new Promise((resolve, reject) => {
+      const ws = fs.createWriteStream(inLocal);
+      r.Body.on("error", reject).pipe(ws).on("error", reject).on("finish", resolve);
+    });
+
+    // 3) 決定輸出參數
     let size;
     if (resolution === "1080p") size = "1920x1080";
     else if (resolution === "720p") size = "1280x720";
     else size = "640x480";
 
-    // 暫存輸出檔
-    const os = require("os");
-    const fs = require("fs");
-    const tempDir = os.tmpdir(); // 在容器/EC2 都安全
-    const base = path.basename(video.filename, path.extname(video.filename));
-    const outName = `${base}-${Date.now()}.${format}`;
-    const outLocal = path.join(tempDir, outName);
-
-    // 以 Promise 包 ffmpeg（方便 await）
-    const runFfmpeg = () => new Promise((resolve, reject) => {
-      let cmd = ffmpeg(inputUrl)
+    // 4) 執行 ffmpeg（用本機檔案）
+    await new Promise((resolve, reject) => {
+      let cmd = ffmpeg(inLocal)
         .size(size)
         .toFormat(format)
+        .outputOptions(["-y"])              // 覆寫輸出檔
         .on("start", c => {
           console.log("FFmpeg started:", c);
-          videoModel.updateStatus(id, "processing", req.user.username);
+          videoModel.updateStatus(id, "processing", req.user.username).catch(()=>{});
         })
         .on("stderr", line => console.log("ffmpeg:", line))
-        .on("end", () => resolve(outLocal))
-        .on("error", err => reject(err));
+        .on("end", resolve)
+        .on("error", reject);
 
-      // 視格式調整 codec/參數
       if (format === "mp4") {
         cmd = cmd.videoCodec("libx264")
-                 .outputOptions(["-preset veryslow", "-crf 23", "-movflags +faststart"]);
+                 .outputOptions(["-preset veryfast", "-crf 26", "-movflags +faststart"]);
       } else if (format === "webm") {
-        cmd = cmd.videoCodec("libvpx-vp9")
-                 .outputOptions(["-b:v 0", "-crf 33"]);
+        cmd = cmd.videoCodec("libvpx-vp9").outputOptions(["-b:v 0", "-crf 33"]);
       } else if (format === "gif") {
-        // 簡化處理：gif 不指定 libx264，時間太長會非常吃 CPU，建議限制 duration
-        cmd = cmd.duration(5);
+        cmd = cmd.duration(5); // gif 限制秒數以防超吃 CPU
       }
 
       cmd.save(outLocal);
     });
 
-    await runFfmpeg();
+    // 5) 上傳輸出檔到 S3
+    const body = await fsp.readFile(outLocal);
+    const outKey = `transcoded/${req.user.username}/${base}-${Date.now()}.${format}`;
+    const contentType = format === "mp4" ? "video/mp4" : (format === "webm" ? "video/webm" : "image/gif");
+    await storageS3.putBuffer({ key: outKey, body, contentType });
 
-    // 讀出暫存檔、上傳 S3 -> transcoded key
-    const buffer = fs.readFileSync(outLocal);
-    const outKey = `transcoded/${req.user.username}/${outName}`;
-    const contentType = (format === "mp4")
-      ? "video/mp4"
-      : (format === "webm" ? "video/webm" : "image/gif");
+    // 6) 清理臨時檔
+    fsp.unlink(inLocal).catch(()=>{});
+    fsp.unlink(outLocal).catch(()=>{});
 
-    await storageS3.putBuffer({ key: outKey, body: buffer, contentType });
-
-    // 刪掉暫存檔
-    fs.unlink(outLocal, () => {});
-
-    // 更新 metadata（存 key，而不是本機路徑）
+    // 7) 更新 metadata & 計數
     await videoModel.updateTranscoded(id, outKey, format, "done", req.user.username);
-
-    // 計數（如要記 transcode 次數）
-    videoModel.incrementTranscodes(id, req.user.username);
+    videoModel.incrementTranscodes(id, req.user.username).catch(()=>{});
 
     res.json({
       success: true,
@@ -273,8 +271,7 @@ exports.transcode = async (req, res) => {
     });
   } catch (e) {
     console.error("Transcode error:", e);
-    // 狀態回寫為 error
-    try { await videoModel.updateStatus(req.params.id, "error", req.user.username); } catch {}
+    try { await videoModel.updateStatus(id, "error", req.user.username); } catch {}
     res.status(500).json({ success: false, message: "Transcode failed" });
   }
 };

@@ -12,6 +12,7 @@ async function ensureS3() {
   if (s3 && BUCKET && REGION) return;
   REGION = await getParam("/n11530430/app/REGION");
   BUCKET = await getParam("/n11530430/app/S3_BUCKET");
+  console.log("REGION:", REGION, ", BUCKET:", BUCKET);
   s3 = new S3Client({ region: REGION });
 }
 exports.ensureS3 = ensureS3;

@@ -6,6 +6,7 @@ exports.signup = async (req, res) => {
     if (!username || !password || !email) {
       return res.status(400).json({ success: false, message: "username, password, email required" });
     }
+    console.log("username:", username, ", password:", password, ", email:", email);
     const r = await cognito.signUp({ username, password, email });
     res.json({ success: true, data: { userConfirmed: r.UserConfirmed, userSub: r.UserSub } });
   } catch (e) {

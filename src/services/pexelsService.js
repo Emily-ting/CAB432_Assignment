@@ -7,9 +7,10 @@ const SECRET_ID = "n11530430/pexels";
 let secret, PEXELS_BASE_URL, headers;
 
 async function ensurePexels() {
-  secret = (await getSecretJSON(SECRET_ID)).PEXELS_API_KEY;
+  const sec = await getSecretJSON(SECRET_ID);
+  secret = sec?.PEXELS_API_KEY || "";
   PEXELS_BASE_URL = await getParam("/n11530430/app/PEXELS_BASE_URL");
-  console.log("api key: ", secret.PEXELS_API_KEY);
+  console.log("api key: ", secret);
   console.log("pexels base url: ", PEXELS_BASE_URL);
   headers = { Authorization: PEXELS_API_KEY };
 }

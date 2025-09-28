@@ -8,14 +8,13 @@ const {
 } = require("@aws-sdk/client-cognito-identity-provider");
 const { getParam } = require("../aws/ssm");
 
-const SECRET_ID = "n11530430/cognito";
-
 let region, userPoolId, client;
 
 async function ensureCognito() {
   if (region && userPoolId && client) return;
   region = await getParam("/n11530430/app/REGION");
   userPoolId = await getParam("/n11530430/app/COGNITO_USER_POOL_ID");
+  console.log("region:", region, ", userPoolId:", userPoolId);
   client = new CognitoIdentityProviderClient({ region });
 }
 

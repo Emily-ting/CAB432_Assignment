@@ -82,6 +82,52 @@ exports.list = async (req, res) => {
   }
 };
 
+exports.listAll = async (req, res) => {
+  try {
+    // 這裡呼叫 model 層：取出所有 video item
+    const videos = await videoModel.findAll(req.query);
+
+    let returnVideos = videos;
+
+    // 排序：createdAt desc
+    if (req.query.sort === "createdAt") {
+      returnVideos = returnVideos.sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      );
+    }
+
+    // 過濾格式
+    if (req.query.format) {
+      returnVideos = returnVideos.filter(v => v.format === req.query.format);
+    }
+
+    // 過濾來源（local vs Pexels）
+    if (req.query.source) {
+      if (req.query.source.toLowerCase() === "local") {
+        returnVideos = returnVideos.filter(
+          v => !v.metadata?.source || v.metadata?.source === "local"
+        );
+      } else if (req.query.source.toLowerCase() === "pexels") {
+        returnVideos = returnVideos.filter(v => v.metadata?.source === "Pexels");
+      }
+    }
+
+    // 分頁
+    if (req.query.page && req.query.limit) {
+      const page = Number(req.query.page);
+      const limit = Number(req.query.limit);
+      const startIndex = limit * (page - 1);
+      const endIndex = limit * page;
+      returnVideos = returnVideos.slice(startIndex, endIndex);
+    }
+
+    res.json({ success: true, data: returnVideos });
+  } catch (e) {
+    console.error("listAll error:", e);
+    res.status(500).json({ success: false, message: "Failed to list videos" });
+  }
+};
+
 exports.download = async (req, res) => {
   const id = req.params.id;
   const video = await videoModel.findById(id, req.user.username);

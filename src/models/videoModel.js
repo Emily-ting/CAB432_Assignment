@@ -56,6 +56,19 @@ exports.findById = async (id, owner) => {
   return r.Item || null;
 };
 
+exports.findAll = async (query) => {
+  const res = await ddoc.send(
+    new ScanCommand({
+      TableName: TABLE,
+      FilterExpression: "begins_with(#sk, :prefix)",
+      ExpressionAttributeNames: { "#sk": "sk" },
+      ExpressionAttributeValues: { ":prefix": "video#" },
+      Limit: Number(query.limit || 100), // 這裡可以加 limit，避免拉太多
+    })
+  );
+  return res.Items || [];
+};
+
 exports.removeById = async (id, owner) => {
   await ddoc.send(new DeleteCommand({
     TableName: TABLE,

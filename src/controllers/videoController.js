@@ -4,10 +4,6 @@ const fs = require('fs');
 const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
 const ffmpeg = require("fluent-ffmpeg");
 const storageS3 = require("../services/storageS3");
-const { GetObjectCommand } = require("@aws-sdk/client-s3");
-const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-const { s3 } = require("../aws/clients");
-const BUCKET = process.env.S3_BUCKET;
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 exports.upload = async (req, res) => {
@@ -182,83 +178,105 @@ exports.getPresignedDownload = async (req, res) => {
   if (!key) return res.status(400).json({ success: false, message: "No key" });
 
   try {
-    const command = new GetObjectCommand({ Bucket: BUCKET, Key: key });
-    const url = await getSignedUrl(s3, command, { expiresIn: 3600 });
+    const url = await storageS3.getPresignedUrl(key, 3600);
     res.json({ success: true, url });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ success: false });
+    console.error("Presign error:", e);
+    res.status(500).json({ success: false, message: "Presign failed" });
   }
 };
 
 exports.transcode = async (req, res) => {
-  const id = req.params.id;
-  const { resolution = "720p", format = "gif" } = req.body;
+  try {
+    const id = req.params.id;
+    const { resolution = "720p", format = "mp4" } = req.body;
 
-  const video = await videoModel.findById(id, req.user.username);
-  console.log("transcode:", video);
+    const video = await videoModel.findById(id, req.user.username);
+    console.log("transcode:", video);
   if (!video) {
     return res.status(404).json({ success: false, message: "Video not found" });
   }
 
-  videoModel.incrementTranscodes(id, req.user.username);
+    // 來源 key：優先 rawKey
+    const srcKey = video.rawKey || video.path;
+    if (!srcKey) return res.status(400).json({ success: false, message: "No source key" });
 
-  // source path
-  const inputPath = path.resolve(video.path);
-  console.log("inputPath:", inputPath);
+    // 產生可被 ffmpeg 讀取的 HTTP URL
+    const inputUrl = await storageS3.getPresignedUrl(srcKey, 3600);
 
-  // output file name
-  const outputName = `${path.basename(video.filename, path.extname(video.filename))}-${Date.now()}.${format}`;
-  const outputPath = path.join("output", outputName);
+    // 決定輸出參數
+    let size;
+    if (resolution === "1080p") size = "1920x1080";
+    else if (resolution === "720p") size = "1280x720";
+    else size = "640x480";
 
-  // choose parameter by resolution
-  let size;
-  if (resolution === "720p") size = "1280x720";
-  else if (resolution === "1080p") size = "1920x1080";
-  else size = "640x480"; // default: 480p
+    // 暫存輸出檔
+    const os = require("os");
+    const fs = require("fs");
+    const tempDir = os.tmpdir(); // 在容器/EC2 都安全
+    const base = path.basename(video.filename, path.extname(video.filename));
+    const outName = `${base}-${Date.now()}.${format}`;
+    const outLocal = path.join(tempDir, outName);
 
-  // call ffmpeg
-  ffmpeg(inputPath)
-    .duration(5)
-    .size(size)
-    .toFormat(format)
-    .videoCodec("libx264")
-    .outputOptions([
-      "-vsync 2",
-      "-fflags +genpts",
-      "-preset veryslow",
-      "-crf 28"
-    ])
-    .on("start", (cmd) => {
-      console.log("FFmpeg started:", cmd);
-      video.status = "processing";
-    })
-    .on("stderr", (line) => {
-      console.log("FFmpeg stderr:", line);
-    })
-    .on("end", () => {
-      console.log("FFmpeg finished:", outputPath);
-      video.status = "done";
-      video.transcoded = outputPath; // save transcode file into database
-      videoModel.updateTranscoded(id, outputPath, format, video.status, req.user.username);
-    })
-    .on("error", (err) => {
-      console.error("FFmpeg error:", err.message);
-      video.status = "error";
-      videoModel.updateStatus(id, "error", req.user.username);
-    })
-    .save(outputPath);
+    // 以 Promise 包 ffmpeg（方便 await）
+    const runFfmpeg = () => new Promise((resolve, reject) => {
+      let cmd = ffmpeg(inputUrl)
+        .size(size)
+        .toFormat(format)
+        .on("start", c => {
+          console.log("FFmpeg started:", c);
+          videoModel.updateStatus(id, "processing", req.user.username);
+        })
+        .on("stderr", line => console.log("ffmpeg:", line))
+        .on("end", () => resolve(outLocal))
+        .on("error", err => reject(err));
 
-  // reply immediately (asynchronous processing)
-  res.json({
-    success: true,
-    message: "Transcoding started",
-    data: {
-      id: video.id,
-      original: video.original,
-      requested: { resolution, format }
-    }
-  });
+      // 視格式調整 codec/參數
+      if (format === "mp4") {
+        cmd = cmd.videoCodec("libx264")
+                 .outputOptions(["-preset veryslow", "-crf 23", "-movflags +faststart"]);
+      } else if (format === "webm") {
+        cmd = cmd.videoCodec("libvpx-vp9")
+                 .outputOptions(["-b:v 0", "-crf 33"]);
+      } else if (format === "gif") {
+        // 簡化處理：gif 不指定 libx264，時間太長會非常吃 CPU，建議限制 duration
+        cmd = cmd.duration(5);
+      }
+
+      cmd.save(outLocal);
+    });
+
+    await runFfmpeg();
+
+    // 讀出暫存檔、上傳 S3 -> transcoded key
+    const buffer = fs.readFileSync(outLocal);
+    const outKey = `transcoded/${req.user.username}/${outName}`;
+    const contentType = (format === "mp4")
+      ? "video/mp4"
+      : (format === "webm" ? "video/webm" : "image/gif");
+
+    await storageS3.putBuffer({ key: outKey, body: buffer, contentType });
+
+    // 刪掉暫存檔
+    fs.unlink(outLocal, () => {});
+
+    // 更新 metadata（存 key，而不是本機路徑）
+    await videoModel.updateTranscoded(id, outKey, format, "done", req.user.username);
+
+    // 計數（如要記 transcode 次數）
+    videoModel.incrementTranscodes(id, req.user.username);
+
+    res.json({
+      success: true,
+      message: "Transcoding completed",
+      data: { id, transcodedKey: outKey, format }
+    });
+  } catch (e) {
+    console.error("Transcode error:", e);
+    // 狀態回寫為 error
+    try { await videoModel.updateStatus(req.params.id, "error", req.user.username); } catch {}
+    res.status(500).json({ success: false, message: "Transcode failed" });
+  }
 };
 
 exports.status = async (req, res) => {

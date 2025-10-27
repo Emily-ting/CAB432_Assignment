@@ -16,7 +16,9 @@
     "@aws-sdk/client-sqs": "^3.917.0",
     "@aws-sdk/client-ssm": "^3.917.0",
     "@aws-sdk/lib-dynamodb": "^3.917.0",
+    "@aws-sdk/s3-request-presigner": "^3.917.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "dotenv": "^17.2.3",
     "fluent-ffmpeg": "^2.1.3"
   }
 }

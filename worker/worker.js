@@ -34,7 +34,7 @@ async function initConfig() {
     BUCKET = await getParam("/n11530430/app/S3_BUCKET");
   }
   if (!QUEUE_URL) {
-    QUEUE_URL = await getParam("/n11530430/app/SQS_QUEUE_URL");
+    QUEUE_URL = await getParam("/n11530430/app/SQS_TRANSCODE_QUEUE_URL");
   }
   if (!sqs) {
     sqs = new SQSClient({ region: REGION });

@@ -1,7 +1,5 @@
 # dependances
 node_modules/
-aws/
-awscliv2.zip
 
 # setting
 .env
